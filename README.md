@@ -7,12 +7,16 @@ An AI agent that handles patient conversations for a dental clinic, the way a re
 The AI never touches the database directly. It can only call five tools, and **all business rules live in code, not in the prompt**:
 
 - It can't offer a time slot without checking real availability first.
-- Double-booking is impossible: every booking is re-validated against the schedule.
-- Past dates, weekends and out-of-hours requests are rejected by the code.
-- A patient can only cancel appointments tied to their own phone number.
-- If a tool fails, the agent gets an error message and recovers instead of crashing.
+- **No double-booking, even when patients book at the same time**: the check and the insert run in one locked database transaction (tested with 20 simultaneous bookings for the same slot).
+- **Retries never duplicate an appointment**: booking the same slot twice for the same patient returns the existing one.
+- **The AI never handles the patient's phone number**: the system injects it, so a patient can only see and cancel their own appointments, even if they try to trick the bot.
+- Past dates, weekends, holidays, out-of-hours and far-future requests are rejected by the code.
+- Times are understood the way people write them ("3pm", "3:30 p.m.", "15:00").
+- Dates and "now" use the clinic's time zone, not the server's.
 
-It also works with **two AI providers** (Google Gemini or Anthropic Claude), chosen in one line of config. With Gemini, if the main model is overloaded or out of quota, the bot switches to a backup model within seconds and skips the failing one for a few minutes, instead of leaving the patient waiting.
+**Patients never see a technical error.** If the AI provider fails, the patient gets a friendly message, the conversation rolls back to a clean state, and the details go to the server log. Two quick messages from the same patient are handled in order instead of getting mixed.
+
+It works with **two AI providers** (Google Gemini or Anthropic Claude), chosen in one line of config. With Gemini, if the main model is overloaded or out of quota, the bot switches to a backup model within seconds and skips the failing one for a few minutes.
 
 ## How it works
 
@@ -45,6 +49,20 @@ uv run uvicorn app.main:app --reload
 ```
 
 4. Open http://localhost:8000
+
+## Tests
+
+```bash
+uv run pytest                          # 47 tests of the business rules, no AI calls, under 1 second
+uv run python -m scripts.prueba_real   # tricky real conversations against the AI (uses API quota)
+```
+
+## Before going to production
+
+- Use a **paid API plan**: free tiers get overloaded and run out of quota.
+- Protect the `/citas` endpoint (the clinic's schedule) with a password.
+- Store conversations in the database instead of memory.
+- Load the clinic's holidays into `DIAS_CERRADOS` (`app/db.py`).
 
 ## Roadmap
 

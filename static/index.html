@@ -120,7 +120,7 @@ $("form").addEventListener("submit", async (e) => {
     });
     const data = await r.json();
     espera.remove();
-    if (!r.ok) return agregar("accion", "⚠️ " + data.detail);
+    if (!r.ok) return agregar("accion", "⚠️ " + (typeof data.detail === "string" ? data.detail : "Revisa el teléfono y el mensaje"));
     for (const a of data.acciones) {
       agregar("accion", "⚙️ " + (NOMBRES[a.herramienta] || a.herramienta) + (a.error ? " (no se pudo)" : ""));
     }

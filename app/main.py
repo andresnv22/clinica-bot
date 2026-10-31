@@ -1,26 +1,36 @@
 """Servidor web: expone el agente por HTTP y sirve la página del demo."""
 
+import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-import anthropic
-import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from google.genai import errors as genai_errors
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import db
 from .agent import conversaciones, falta_clave, responder
 
-STATIC = Path(__file__).resolve().parent.parent / "static"
+RAIZ = Path(__file__).resolve().parent.parent
+STATIC = RAIZ / "static"
+
+# Los errores técnicos van a clinica.log (máximo 3 archivos de 1 MB), nunca al paciente
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        RotatingFileHandler(RAIZ / "clinica.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8"),
+    ],
+)
 
 app = FastAPI(title="Clínica Bot")
 db.inicializar()
 
 
 class Mensaje(BaseModel):
-    telefono: str
-    texto: str
+    telefono: str = Field(min_length=5, max_length=30)
+    texto: str = Field(max_length=5000)
 
 
 @app.get("/")
@@ -30,25 +40,12 @@ def inicio():
 
 @app.post("/chat")
 def chat(msg: Mensaje):
+    # Esto es un error de configuración del dueño, no del paciente
     variable = falta_clave()
     if variable:
-        raise HTTPException(401, f"Falta {variable} en el archivo .env")
-    try:
-        return responder(msg.telefono, msg.texto)
-    except genai_errors.APIError as e:
-        if e.code == 429:
-            raise HTTPException(429, "Llegaste al límite del plan gratis de Gemini, espera un minuto.")
-        raise HTTPException(502, f"Error de la API de Gemini: {e.message}")
-    except httpx.HTTPError:
-        raise HTTPException(503, "Falló la conexión con Gemini, intenta de nuevo.")
-    except anthropic.AuthenticationError:
-        raise HTTPException(401, "Falta la API key de Anthropic o no es válida (ANTHROPIC_API_KEY).")
-    except anthropic.RateLimitError:
-        raise HTTPException(429, "Demasiadas solicitudes, espera unos segundos.")
-    except anthropic.APIStatusError as e:
-        raise HTTPException(502, f"Error de la API de Claude: {e.message}")
-    except anthropic.APIConnectionError:
-        raise HTTPException(503, "No hay conexión con la API de Claude.")
+        raise HTTPException(500, f"Falta {variable} en el archivo .env")
+    # responder() nunca lanza errores: si la IA falla, devuelve un mensaje amable
+    return responder(msg.telefono.strip(), msg.texto)
 
 
 @app.post("/reiniciar/{telefono}")
@@ -59,7 +56,7 @@ def reiniciar(telefono: str):
 
 @app.get("/citas")
 def citas():
-    """Vista de la recepción: todas las citas próximas."""
+    """Vista de la recepción: todas las citas. (En producción esto necesita contraseña.)"""
     with db.conectar() as conn:
         filas = conn.execute(
             """SELECT c.id, c.paciente, c.telefono, s.nombre AS servicio, c.inicio, c.estado

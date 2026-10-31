@@ -1,7 +1,10 @@
-"""Base de datos de la clínica (SQLite). Guarda servicios y citas."""
+"""Base de datos de la clínica (SQLite). Guarda servicios, citas y la configuración del negocio."""
 
+import os
 import sqlite3
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 DB_PATH = Path(__file__).resolve().parent.parent / "clinica.db"
 
@@ -16,10 +19,22 @@ SERVICIOS = [
 HORA_APERTURA = 9
 HORA_CIERRE = 18
 DIAS_ATENCION = {0, 1, 2, 3, 4}  # 0 = lunes
+# Festivos o días en que la clínica no abre, en formato YYYY-MM-DD
+DIAS_CERRADOS: set[str] = set()
+MAX_DIAS_ADELANTE = 90  # no se agenda más allá de esto
+
+# La hora del negocio, no la del servidor: si se aloja en otro país, las
+# citas "de hoy" y "las horas que ya pasaron" siguen siendo las de Colombia.
+ZONA_HORARIA = ZoneInfo(os.environ.get("ZONA_HORARIA", "America/Bogota"))
+
+
+def ahora() -> datetime:
+    """Fecha y hora actual en la zona del negocio (sin tzinfo, para comparar con la BD)."""
+    return datetime.now(ZONA_HORARIA).replace(tzinfo=None)
 
 
 def conectar() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     return conn
 
