@@ -1,0 +1,12 @@
+[project]
+name = "clinica-bot"
+version = "0.1.0"
+description = "Agente de IA que agenda citas para una clínica dental"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic",
+    "fastapi",
+    "google-genai>=2.34.0",
+    "python-dotenv>=1.2.4",
+    "uvicorn",
+]
