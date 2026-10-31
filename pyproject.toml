@@ -10,3 +10,8 @@ dependencies = [
     "python-dotenv>=1.2.4",
     "uvicorn",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
