@@ -7,6 +7,7 @@ dependencies = [
     "anthropic",
     "fastapi",
     "google-genai>=2.34.0",
+    "httpx",
     "python-dotenv>=1.2.4",
     "uvicorn",
 ]

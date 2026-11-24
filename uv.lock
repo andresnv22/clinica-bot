@@ -329,6 +329,7 @@ dependencies = [
     { name = "anthropic" },
     { name = "fastapi" },
     { name = "google-genai" },
+    { name = "httpx" },
     { name = "python-dotenv" },
     { name = "uvicorn" },
 ]
@@ -343,6 +344,7 @@ requires-dist = [
     { name = "anthropic" },
     { name = "fastapi" },
     { name = "google-genai", specifier = ">=2.34.0" },
+    { name = "httpx" },
     { name = "python-dotenv", specifier = ">=1.2.4" },
     { name = "uvicorn" },
 ]

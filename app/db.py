@@ -2,6 +2,7 @@
 
 import os
 import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -59,8 +60,26 @@ def inicializar() -> None:
                 estado TEXT NOT NULL DEFAULT 'confirmada',  -- confirmada | cancelada
                 creada TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
             );
+            CREATE TABLE IF NOT EXISTS seen_messages (
+                id TEXT PRIMARY KEY,
+                expires_at REAL NOT NULL
+            );
             """
         )
         conn.executemany(
             "INSERT OR IGNORE INTO servicios VALUES (?, ?, ?, ?)", SERVICIOS
         )
+
+
+def claim_message(message_id: str, ttl_seconds: int = 600) -> bool:
+    """Registra `message_id` de WhatsApp; devuelve True si ya se había procesado."""
+    if not message_id:
+        return False
+    now = time.time()
+    with conectar() as conn:
+        conn.execute("DELETE FROM seen_messages WHERE expires_at < ?", (now,))
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO seen_messages (id, expires_at) VALUES (?, ?)",
+            (message_id, now + ttl_seconds),
+        )
+        return cur.rowcount == 0

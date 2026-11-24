@@ -1,15 +1,19 @@
-"""Servidor web: expone el agente por HTTP y sirve la página del demo."""
+"""Servidor web: expone el webhook de WhatsApp Cloud API, el chat web y las citas."""
 
 import logging
+import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from dotenv import load_dotenv
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
-from . import db
-from .agent import conversaciones, falta_clave, responder
+load_dotenv()
+
+from . import db, whatsapp  # noqa: E402
+from .agent import conversaciones, falta_clave, responder  # noqa: E402
 
 RAIZ = Path(__file__).resolve().parent.parent
 STATIC = RAIZ / "static"
@@ -33,6 +37,11 @@ class Mensaje(BaseModel):
     texto: str = Field(max_length=5000)
 
 
+@app.get("/health")
+def health():
+    return {"ok": True, "whatsapp_configured": whatsapp.configured()}
+
+
 @app.get("/")
 def inicio():
     return FileResponse(STATIC / "index.html")
@@ -54,9 +63,60 @@ def reiniciar(telefono: str):
     return {"ok": True}
 
 
+UNSUPPORTED_WA_MSG = (
+    "Por ahora solo puedo leer mensajes de texto. "
+    "¿Me escribes por texto qué servicio necesitas y para qué día?"
+)
+
+
+def _procesar_whatsapp(phone: str, text: str, message_id: str) -> None:
+    whatsapp.mark_read(message_id)
+    resultado = responder(phone, text)
+    whatsapp.send_text(phone, resultado["respuesta"])
+
+
+def _responder_no_soportado(phone: str, message_id: str) -> None:
+    whatsapp.mark_read(message_id)
+    whatsapp.send_text(phone, UNSUPPORTED_WA_MSG)
+
+
+@app.get("/webhook")
+def verificar_webhook(
+    mode: str = Query("", alias="hub.mode"),
+    token: str = Query("", alias="hub.verify_token"),
+    challenge: str = Query("", alias="hub.challenge"),
+):
+    """Verificación única de Meta al registrar el webhook."""
+    expected = os.environ.get("WHATSAPP_VERIFY_TOKEN", "")
+    if mode == "subscribe" and expected and token == expected:
+        return PlainTextResponse(challenge)
+    raise HTTPException(403, "Verificación fallida")
+
+
+@app.post("/webhook")
+async def recibir_webhook(request: Request, background: BackgroundTasks):
+    body = await request.body()
+    if not whatsapp.valid_signature(body, request.headers.get("X-Hub-Signature-256")):
+        raise HTTPException(403, "Firma inválida")
+
+    payload = await request.json()
+    for msg in whatsapp.parse_incoming(payload):
+        if not msg["phone"] or whatsapp.is_duplicate(msg["id"]):
+            continue
+        background.add_task(_procesar_whatsapp, msg["phone"], msg["text"], msg["id"])
+    for msg in whatsapp.parse_unsupported(payload):
+        if not msg["phone"] or whatsapp.is_duplicate(msg["id"]):
+            continue
+        background.add_task(_responder_no_soportado, msg["phone"], msg["id"])
+    return {"status": "ok"}
+
+
 @app.get("/citas")
-def citas():
-    """Vista de la recepción: todas las citas. (En producción esto necesita contraseña.)"""
+def citas(authorization: str | None = Header(default=None)):
+    """Vista de la recepción: si ADMIN_TOKEN está definido en .env, exige Bearer token."""
+    expected = os.environ.get("ADMIN_TOKEN", "")
+    if expected and authorization != f"Bearer {expected}":
+        raise HTTPException(401, "No autorizado")
     with db.conectar() as conn:
         filas = conn.execute(
             """SELECT c.id, c.paciente, c.telefono, s.nombre AS servicio, c.inicio, c.estado
