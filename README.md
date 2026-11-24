@@ -53,7 +53,7 @@ uv run uvicorn app.main:app --reload
 ## Tests
 
 ```bash
-uv run pytest                          # 47 tests of the business rules, no AI calls, under 1 second
+uv run pytest                          # 55 tests of the business rules, no AI calls, under 1 second
 uv run python -m scripts.prueba_real   # tricky real conversations against the AI (uses API quota)
 ```
 
