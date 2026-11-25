@@ -32,6 +32,8 @@ MODELO_GEMINI = os.environ.get("MODELO_GEMINI", "gemini-3.5-flash")
 # Si un modelo está saturado, se prueba el siguiente de la lista
 # (Los modelos "lite" quedan fuera: en pruebas inventaron precios sin consultar las herramientas)
 MODELOS_GEMINI = list(dict.fromkeys([MODELO_GEMINI, "gemini-3.5-flash"]))
+MODELO_DEEPSEEK = os.environ.get("DEEPSEEK_MODEL", "deepseek-flash").strip() or "deepseek-flash"
+DEEPSEEK_BASE = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
 MAX_PASOS = 10  # tope de seguridad para que el ciclo no sea infinito
 INACTIVIDAD = 6 * 60 * 60  # segundos sin mensajes para empezar una conversación nueva
 MAX_LARGO_MENSAJE = 2000
@@ -79,7 +81,12 @@ def _candado(telefono: str) -> threading.Lock:
 
 def falta_clave() -> str | None:
     """Devuelve el nombre de la variable que falta en .env, o None si está todo."""
-    variable = "GEMINI_API_KEY" if PROVEEDOR == "gemini" else "ANTHROPIC_API_KEY"
+    if PROVEEDOR == "deepseek":
+        variable = "DEEPSEEK_API_KEY"
+    elif PROVEEDOR == "gemini":
+        variable = "GEMINI_API_KEY"
+    else:
+        variable = "ANTHROPIC_API_KEY"
     valor = os.environ.get(variable, "")
     return variable if not valor or valor.startswith("pega-tu") else None
 
@@ -136,7 +143,12 @@ def responder(telefono: str, texto: str) -> dict:
         acciones: list = []
 
         try:
-            responder_con = _responder_gemini if PROVEEDOR == "gemini" else _responder_claude
+            if PROVEEDOR == "deepseek":
+                responder_con = _responder_deepseek
+            elif PROVEEDOR == "gemini":
+                responder_con = _responder_gemini
+            else:
+                responder_con = _responder_claude
             respuesta = responder_con(texto, mensajes, acciones, telefono)
         except Rechazado:
             del mensajes[antes:]
@@ -152,6 +164,102 @@ def responder(telefono: str, texto: str) -> dict:
             return {"respuesta": MENSAJE_ENREDO, "acciones": acciones}
         return {"respuesta": _texto_final(respuesta, acciones), "acciones": acciones}
 
+
+
+# ---------- DeepSeek (OpenAI-compatible) ----------
+
+def _historial_texto(mensajes: list) -> list[dict]:
+    """Convierte historial previo (Claude/Gemini/dicts) a turnos de texto."""
+    out = []
+    for m in mensajes:
+        role = m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
+        if role == "model":
+            role = "assistant"
+        content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+        text = ""
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            chunks = []
+            for block in content:
+                if isinstance(block, str):
+                    chunks.append(block)
+                elif isinstance(block, dict) and block.get("type") == "text":
+                    chunks.append(block.get("text", ""))
+            text = "".join(chunks)
+        if role in ("user", "assistant") and text.strip():
+            out.append({"role": role, "content": text.strip()})
+    return out
+
+
+def _responder_deepseek(texto: str, mensajes: list, acciones: list, telefono: str) -> str | None:
+    import httpx
+
+    key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("Falta DEEPSEEK_API_KEY")
+    tools = [
+        {"type": "function", "function": {
+            "name": t["name"],
+            "description": t["description"],
+            "parameters": t["input_schema"],
+        }}
+        for t in TOOLS
+    ]
+    messages = [{"role": "system", "content": _system()}]
+    messages += _historial_texto(mensajes)
+    messages.append({"role": "user", "content": texto})
+
+    for _ in range(MAX_PASOS):
+        response = httpx.post(
+            f"{DEEPSEEK_BASE}/chat/completions",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json={
+                "model": MODELO_DEEPSEEK,
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": "auto",
+                "temperature": 0.3,
+                "max_tokens": 1200,
+                "stream": False,
+                "thinking": {"type": "disabled"},
+            },
+            timeout=45,
+        )
+        response.raise_for_status()
+        data = response.json()
+        choice = (data.get("choices") or [{}])[0]
+        if choice.get("finish_reason") == "content_filter":
+            raise Rechazado()
+        message = choice.get("message") or {}
+        calls = message.get("tool_calls") or []
+        if not calls:
+            answer = (message.get("content") or "").strip()
+            mensajes.append({"role": "user", "content": texto})
+            if answer:
+                mensajes.append({"role": "assistant", "content": answer})
+            return answer
+
+        messages.append({
+            "role": "assistant",
+            "content": message.get("content") or "",
+            "tool_calls": calls,
+        })
+        for call in calls:
+            function = call.get("function") or {}
+            name = function.get("name", "")
+            try:
+                entrada = json.loads(function.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                entrada = {}
+            salida, es_error = ejecutar_herramienta(name, entrada, telefono)
+            acciones.append({"herramienta": name, "entrada": entrada, "error": es_error})
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call.get("id", ""),
+                "content": json.dumps(salida, ensure_ascii=False),
+            })
+    return None
 
 # ---------- Claude ----------
 
